@@ -25,12 +25,17 @@ public extension Frame {
         }
     }
 
-    struct Entry: Sendable, Equatable {
-        public enum Kind: Sendable { case assignment, declaration }
+    /// `.name = value` inside `.{ }`.
+    struct Field: Sendable, Equatable {
         public let name: String
         public let value: Value
-        public let kind: Kind
         public let range: PositionRange
+
+        public init(name: String, value: Value, range: PositionRange) {
+            self.name = name
+            self.value = value
+            self.range = range
+        }
     }
 
     indirect enum Value: Sendable, Equatable {
@@ -39,16 +44,42 @@ public extension Frame {
         case decimal(Decimal)
         case boolean(Bool)
         case null
-        case object([Entry])
+        case object([Field])
         case array([Value])
         case reference(Reference)
+        /// `.name`: a member of the expected type, e.g. an enum case.
+        case member(String)
+    }
+
+    struct Import: Sendable, Equatable {
+        public let module: String
+        public let range: PositionRange
+    }
+
+    struct Binding: Sendable, Equatable {
+        public enum Mutability: Sendable, Equatable { case constant, variable }
+
+        public let name: String
+        public let mutability: Mutability
+        /// As written, e.g. `PathScope` or `agentic.PathScope`.
+        public let type: Reference?
+        /// After every reassignment of a `var`.
+        public let value: Value
+        public let range: PositionRange
     }
 
     struct Document: Sendable, Equatable {
-        public let entries: [Entry]
+        public let imports: [Import]
+        public let bindings: [Binding]
 
-        public init(entries: [Entry]) { self.entries = entries }
-        public func entries(named name: String) -> [Entry] { entries.filter { $0.name == name } }
+        public init(imports: [Import] = [], bindings: [Binding]) {
+            self.imports = imports
+            self.bindings = bindings
+        }
+
+        public func binding(named name: String) -> Binding? {
+            bindings.first { $0.name == name }
+        }
 
         /// Resolve a qualified accessor without coercing it into a string.
         public func resolve(_ reference: Reference) throws -> Value {
@@ -59,22 +90,26 @@ public extension Frame {
         private func resolve(_ reference: Reference, visited: inout Set<Reference>) throws -> Value {
             guard visited.insert(reference).inserted else { throw ResolutionFailure.cycle(reference) }
             defer { _ = visited.remove(reference) }
-            var entries = self.entries
-            for (index, component) in reference.components.enumerated() {
-                let matches = entries.filter { $0.name == component }
-                guard let entry = matches.first else { throw ResolutionFailure.missing(reference) }
-                guard matches.count == 1 else { throw ResolutionFailure.ambiguous(reference) }
-                var resolved = entry.value
+            guard let binding = binding(named: reference.components[0]) else {
+                throw ResolutionFailure.missing(reference)
+            }
+            var resolved = binding.value
+            for component in reference.components.dropFirst() {
                 if case .reference(let nested) = resolved {
                     resolved = try resolve(nested, visited: &visited)
                 }
-                if index == reference.components.count - 1 { return resolved }
-                guard case .object(let members) = resolved else {
+                guard case .object(let fields) = resolved else {
                     throw ResolutionFailure.not_object(reference)
                 }
-                entries = members
+                let matches = fields.filter { $0.name == component }
+                guard let field = matches.first else { throw ResolutionFailure.missing(reference) }
+                guard matches.count == 1 else { throw ResolutionFailure.ambiguous(reference) }
+                resolved = field.value
             }
-            throw ResolutionFailure.invalid_reference
+            if case .reference(let nested) = resolved {
+                resolved = try resolve(nested, visited: &visited)
+            }
+            return resolved
         }
     }
 

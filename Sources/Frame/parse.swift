@@ -25,7 +25,7 @@ public extension Frame {
             let range = try? Position.TextMap(source: source).legacyRange(error.range)
             throw SyntaxFailure(Diagnostic(error.message, range: range, utf8Range: error.range))
         }
-        return Document(entries: try Adapter(source: source).entries(in: root))
+        return try Adapter(source: source).document(root)
     }
 
     private static let native: Result<GrammarParser, any Error> = Result {
@@ -37,19 +37,129 @@ private struct Adapter {
     let map: Position.TextMap
     init(source: String) { map = Position.TextMap(source: source) }
 
-    func entries(in node: GrammarParser.Node) throws -> [Frame.Entry] {
-        try node.children.filter { $0.name == "entry" }.map(entry)
+    func document(_ node: GrammarParser.Node) throws -> Frame.Document {
+        var imports: [Frame.Import] = []
+        var bindings: [Frame.Binding] = []
+        for child in node.children {
+            switch child.name {
+            case "import":
+                guard let module = child.children.first(where: { $0.field == "module" })?.text else {
+                    throw failure("Missing module name", at: child)
+                }
+                guard !imports.contains(where: { $0.module == module }) else {
+                    throw failure("'\(module)' is already imported", at: child)
+                }
+                imports.append(.init(module: module, range: try map.legacyRange(child.range)))
+            case "binding":
+                let binding = try self.binding(child)
+                guard !bindings.contains(where: { $0.name == binding.name }) else {
+                    throw failure("'\(binding.name)' is already declared", at: child)
+                }
+                bindings.append(binding)
+            case "assignment":
+                try assign(child, in: &bindings)
+            default:
+                continue
+            }
+        }
+        return Frame.Document(imports: imports, bindings: bindings)
     }
 
-    func entry(_ node: GrammarParser.Node) throws -> Frame.Entry {
-        guard let name = node.children.first(where: { $0.field == "name" })?.text,
+    func binding(_ node: GrammarParser.Node) throws -> Frame.Binding {
+        guard let mutability = node.children.first(where: { $0.field == "mutability" }).flatMap(text),
+              let name = node.children.first(where: { $0.field == "name" })?.text,
               let value = node.children.first(where: { $0.field == "value" }) else {
-            throw failure("Missing Frame entry field", at: node)
+            throw failure("Incomplete declaration", at: node)
         }
-        let kind: Frame.Entry.Kind = node.children.contains(where: { $0.text == "=" })
-            ? .assignment : .declaration
-        return Frame.Entry(name: name, value: try self.value(value), kind: kind,
-                           range: try map.legacyRange(node.range))
+        let type = try node.children.first(where: { $0.field == "type" }).map { type in
+            try Frame.Reference(components: type.children.compactMap { $0.name == "identifier" ? $0.text : nil })
+        }
+        return Frame.Binding(
+            name: name,
+            mutability: mutability == "let" ? .constant : .variable,
+            type: type,
+            value: try self.value(value),
+            range: try map.legacyRange(node.range)
+        )
+    }
+
+    /// `name = value;` replaces a `var`; `name.a.b = value;` one field in it.
+    func assign(_ node: GrammarParser.Node, in bindings: inout [Frame.Binding]) throws {
+        guard let target = node.children.first(where: { $0.field == "target" }),
+              let value = node.children.first(where: { $0.field == "value" }) else {
+            throw failure("Incomplete assignment", at: node)
+        }
+        let path = target.children.compactMap { $0.name == "identifier" ? $0.text : nil }
+        guard let index = bindings.firstIndex(where: { $0.name == path.first }) else {
+            throw failure("'\(path.first ?? "")' is not declared; declare it with var", at: node)
+        }
+        let binding = bindings[index]
+        guard binding.mutability == .variable else {
+            throw failure("'\(binding.name)' is a let constant", at: node)
+        }
+        let replaced = try setting(
+            binding.value,
+            at: Array(path.dropFirst()),
+            to: try self.value(value),
+            range: try map.legacyRange(node.range),
+            node: node
+        )
+        bindings[index] = Frame.Binding(
+            name: binding.name,
+            mutability: binding.mutability,
+            type: binding.type,
+            value: replaced,
+            range: binding.range
+        )
+    }
+
+    func setting(
+        _ value: Frame.Value,
+        at path: [String],
+        to new: Frame.Value,
+        range: PositionRange,
+        node: GrammarParser.Node
+    ) throws -> Frame.Value {
+        guard let name = path.first else { return new }
+        guard case .object(var fields) = value else {
+            throw failure("'\(name)' is not inside an object literal", at: node)
+        }
+        if let index = fields.firstIndex(where: { $0.name == name }) {
+            fields[index] = Frame.Field(
+                name: name,
+                value: try setting(fields[index].value, at: Array(path.dropFirst()), to: new, range: range, node: node),
+                range: range
+            )
+        } else {
+            fields.append(Frame.Field(
+                name: name,
+                value: try setting(.object([]), at: Array(path.dropFirst()), to: new, range: range, node: node),
+                range: range
+            ))
+        }
+        return .object(fields)
+    }
+
+    func text(_ node: GrammarParser.Node) -> String? {
+        node.text ?? node.children.first.flatMap(text)
+    }
+
+    func fields(in node: GrammarParser.Node) throws -> [Frame.Field] {
+        var fields: [Frame.Field] = []
+        for child in node.children {
+            if child.name == "field" {
+                guard let name = child.children.first(where: { $0.field == "name" })?.text,
+                      let value = child.children.first(where: { $0.field == "value" }) else {
+                    throw failure("Incomplete field", at: child)
+                }
+                guard !fields.contains(where: { $0.name == name }) else {
+                    throw failure("Duplicate field '\(name)'", at: child)
+                }
+                fields.append(.init(name: name, value: try self.value(value), range: try map.legacyRange(child.range)))
+            }
+            if child.name == "fields" { fields.append(contentsOf: try self.fields(in: child)) }
+        }
+        return fields
     }
 
     func value(_ node: GrammarParser.Node) throws -> Frame.Value {
@@ -70,16 +180,23 @@ private struct Adapter {
             }
             guard let integer = Int(raw) else { throw failure("Integer out of range", at: node) }
             return .integer(integer)
+        case "boolean":
+            guard let raw = node.text else { throw failure("Missing boolean literal", at: node) }
+            return .boolean(raw == "true")
+        case "null":
+            return .null
         case "reference":
             let components = node.children.compactMap { child in
                 child.name == "identifier" ? child.text : nil
             }
-            if components == ["true"] { return .boolean(true) }
-            if components == ["false"] { return .boolean(false) }
-            if components == ["null"] { return .null }
             return .reference(try Frame.Reference(components: components))
-        case "object":
-            return .object(try entries(in: node))
+        case "member":
+            guard let name = node.children.first(where: { $0.field == "name" })?.text else {
+                throw failure("Missing member name", at: node)
+            }
+            return .member(name)
+        case "literal":
+            return .object(try fields(in: node))
         case "array":
             guard let items = node.children.first(where: { $0.name == "array_items" }) else {
                 return .array([])

@@ -1,28 +1,50 @@
 import Foundation
 
-/// A typed decoder for Frame values. References remain distinct unless resolution is opted into.
+/// A typed decoder for Frame values.
 public struct FrameCoding: Sendable {
-    public enum DuplicateKeys: Sendable { case reject, first_wins, last_wins }
     public enum References: Sendable { case preserve, resolve }
+    public enum UnknownFields: Sendable { case reject, ignore }
 
-    public let duplicateKeys: DuplicateKeys
     public let references: References
+    /// A field the decoded type never reads is a typo or a stale setting.
+    public let unknownFields: UnknownFields
 
-    public init(duplicateKeys: DuplicateKeys = .reject, references: References = .preserve) {
-        self.duplicateKeys = duplicateKeys
+    public init(references: References = .resolve, unknownFields: UnknownFields = .reject) {
         self.references = references
+        self.unknownFields = unknownFields
     }
 
+    /// Every binding of the document, as fields of one object.
     public func decode<T: Decodable>(_ type: T.Type, from document: Frame.Document) throws -> T {
-        try FrameDecoder(value: .object(document.entries), document: document,
-                         codingPath: [], duplicateKeys: duplicateKeys,
-                         references: references).unbox(type)
+        try decode(type, value: .object(document.bindings.map {
+            Frame.Field(name: $0.name, value: $0.value, range: $0.range)
+        }), in: document)
+    }
+
+    /// One binding's value.
+    public func decode<T: Decodable>(_ type: T.Type, binding name: String, in document: Frame.Document) throws -> T {
+        guard let binding = document.binding(named: name) else {
+            throw Frame.ResolutionFailure.missing(try Frame.Reference(components: [name]))
+        }
+        return try decode(type, value: binding.value, in: document)
+    }
+
+    public func decode<T: Decodable>(_ type: T.Type, value: Frame.Value, in document: Frame.Document) throws -> T {
+        let usage = FrameFieldUsage()
+        let result = try FrameDecoder(value: value, document: document, codingPath: [],
+                                      references: references, usage: usage).unbox(type)
+        if unknownFields == .reject { try usage.requireAllRead() }
+        return result
     }
 }
 
 public extension Frame.Document {
     func decode<T: Decodable>(_ type: T.Type, using coding: FrameCoding = .init()) throws -> T {
         try coding.decode(type, from: self)
+    }
+
+    func decode<T: Decodable>(_ type: T.Type, binding name: String, using coding: FrameCoding = .init()) throws -> T {
+        try coding.decode(type, binding: name, in: self)
     }
 }
 
@@ -34,12 +56,41 @@ public extension Frame {
     }
 }
 
+/// Which fields of each decoded object the type read.
+private final class FrameFieldUsage: @unchecked Sendable {
+    private var objects: [String: (path: [CodingKey], names: [String], read: Set<String>)] = [:]
+
+    func register(_ path: [CodingKey], names: [String]) {
+        let key = Self.key(path)
+        if objects[key] == nil { objects[key] = (path, names, []) }
+    }
+
+    func read(_ name: String, at path: [CodingKey]) {
+        objects[Self.key(path)]?.read.insert(name)
+    }
+
+    func requireAllRead() throws {
+        for object in objects.values.sorted(by: { $0.path.count < $1.path.count }) {
+            if let unknown = object.names.first(where: { !object.read.contains($0) }) {
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: object.path + [FrameFieldKey(unknown)],
+                    debugDescription: "Unknown field '\(unknown)'"
+                ))
+            }
+        }
+    }
+
+    private static func key(_ path: [CodingKey]) -> String {
+        path.map { $0.intValue.map(String.init) ?? $0.stringValue }.joined(separator: ".")
+    }
+}
+
 private struct FrameDecoder: Decoder {
     let value: Frame.Value
     let document: Frame.Document
     let codingPath: [CodingKey]
-    let duplicateKeys: FrameCoding.DuplicateKeys
     let references: FrameCoding.References
+    let usage: FrameFieldUsage
     var userInfo: [CodingUserInfoKey: Any] { [:] }
 
     func effectiveValue() throws -> Frame.Value {
@@ -58,7 +109,7 @@ private struct FrameDecoder: Decoder {
 
     func child(_ value: Frame.Value, key: CodingKey) -> Self {
         .init(value: value, document: document, codingPath: codingPath + [key],
-              duplicateKeys: duplicateKeys, references: references)
+              references: references, usage: usage)
     }
 
     func unbox<T: Decodable>(_ type: T.Type) throws -> T {
@@ -79,8 +130,9 @@ private struct FrameDecoder: Decoder {
     }
 
     func container<Key>(keyedBy type: Key.Type) throws -> KeyedDecodingContainer<Key> where Key: CodingKey {
-        guard case .object(let entries) = try effectiveValue() else { throw mismatch([String: Any].self) }
-        return KeyedDecodingContainer(try FrameKeyedContainer(decoder: self, entries: entries))
+        guard case .object(let fields) = try effectiveValue() else { throw mismatch([String: Any].self) }
+        usage.register(codingPath, names: fields.map(\.name))
+        return KeyedDecodingContainer(FrameKeyedContainer(decoder: self, fields: fields))
     }
 
     func unkeyedContainer() throws -> UnkeyedDecodingContainer {
@@ -112,45 +164,34 @@ private struct FrameFieldKey: CodingKey {
 
 private struct FrameKeyedContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
     let decoder: FrameDecoder
-    let entries: [String: Frame.Entry]
+    let fields: [String: Frame.Field]
     let allKeys: [Key]
     var codingPath: [CodingKey] { decoder.codingPath }
 
-    init(decoder: FrameDecoder, entries raw: [Frame.Entry]) throws {
+    init(decoder: FrameDecoder, fields raw: [Frame.Field]) {
         self.decoder = decoder
-        var selected: [String: Frame.Entry] = [:]
-        var names: [String] = []
-        for entry in raw {
-            if selected[entry.name] != nil {
-                switch decoder.duplicateKeys {
-                case .reject:
-                    throw decoder.child(entry.value, key: FrameFieldKey(entry.name))
-                        .corruption("Duplicate Frame field '\(entry.name)'")
-                case .first_wins: continue
-                case .last_wins: break
-                }
-            } else {
-                names.append(entry.name)
-            }
-            selected[entry.name] = entry
-        }
-        self.entries = selected
-        self.allKeys = names.compactMap(Key.init(stringValue:))
+        self.fields = Dictionary(raw.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        self.allKeys = raw.map(\.name).compactMap(Key.init(stringValue:))
     }
 
-    func contains(_ key: Key) -> Bool { entries[key.stringValue] != nil }
+    func contains(_ key: Key) -> Bool {
+        decoder.usage.read(key.stringValue, at: codingPath)
+        return fields[key.stringValue] != nil
+    }
     func decodeNil(forKey key: Key) throws -> Bool {
-        guard let entry = entries[key.stringValue] else { return true }
-        if case .null = try decoder.child(entry.value, key: key).effectiveValue() { return true }
+        decoder.usage.read(key.stringValue, at: codingPath)
+        guard let field = fields[key.stringValue] else { return true }
+        if case .null = try decoder.child(field.value, key: key).effectiveValue() { return true }
         return false
     }
 
     private func require(_ key: Key) throws -> FrameDecoder {
-        guard let entry = entries[key.stringValue] else {
+        decoder.usage.read(key.stringValue, at: codingPath)
+        guard let field = fields[key.stringValue] else {
             throw DecodingError.keyNotFound(key, .init(codingPath: codingPath,
                 debugDescription: "Missing Frame field '\(key.stringValue)'"))
         }
-        return decoder.child(entry.value, key: key)
+        return decoder.child(field.value, key: key)
     }
 
     func decode(_ type: Bool.Type, forKey key: Key) throws -> Bool { try require(key).unbox(type) }
@@ -177,7 +218,7 @@ private struct FrameKeyedContainer<Key: CodingKey>: KeyedDecodingContainerProtoc
     }
     func superDecoder() throws -> Decoder {
         let key = FrameFieldKey("super")
-        return decoder.child(entries[key.stringValue]?.value ?? .object([]), key: key)
+        return decoder.child(fields[key.stringValue]?.value ?? .object([]), key: key)
     }
     func superDecoder(forKey key: Key) throws -> Decoder { try require(key) }
 }
@@ -243,9 +284,14 @@ private struct FrameSingleContainer: SingleValueDecodingContainer {
         guard case .boolean(let result) = try decoder.effectiveValue() else { throw decoder.mismatch(type) }
         return result
     }
+    /// A string, or a member: `.review` decodes as "review", so
+    /// String-backed enums read naturally.
     func decode(_ type: String.Type) throws -> String {
-        guard case .string(let result) = try decoder.effectiveValue() else { throw decoder.mismatch(type) }
-        return result
+        switch try decoder.effectiveValue() {
+        case .string(let result): return result
+        case .member(let name): return name
+        default: throw decoder.mismatch(type)
+        }
     }
     func decode(_ type: Int.Type) throws -> Int {
         guard case .integer(let result) = try decoder.effectiveValue() else { throw decoder.mismatch(type) }
