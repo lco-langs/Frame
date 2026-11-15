@@ -3,7 +3,7 @@ import enum Grammar.Grammar
 public enum Frame {
     /// A single grammar drives native recognition and Tree-sitter export.
     ///
-    ///     import agentic;
+    ///     import Agentic;
     ///     let scope: PathScope = .{ .path = "~/notes", .sessions = .all, };
     ///     var settings: AgenticSettings = .{ .paths = .{ .ask = [scope] } };
     ///     settings.paths.deny = [];
