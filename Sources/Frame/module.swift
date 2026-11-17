@@ -17,13 +17,24 @@ public extension Frame {
     /// A nameable type: checked by decoding a value into its Swift type.
     struct TypeDefinition: Sendable {
         public let name: String
+        /// For editors; `nil` when the type does not describe itself.
+        public let schema: Schema?
         let check: @Sendable (Value, Document, FrameCoding) throws -> Void
 
         public static func decodable<T: Decodable & Sendable>(
             _ type: T.Type,
             named name: String
         ) -> Self {
-            .init(name: name) { value, document, coding in
+            .init(name: name, schema: nil) { value, document, coding in
+                _ = try coding.decode(type, value: value, in: document)
+            }
+        }
+
+        public static func decodable<T: Decodable & Sendable & FrameDescribable>(
+            _ type: T.Type,
+            named name: String
+        ) -> Self {
+            .init(name: name, schema: type.frameSchema) { value, document, coding in
                 _ = try coding.decode(type, value: value, in: document)
             }
         }
@@ -57,6 +68,15 @@ public extension Frame {
             guard let line, let column else { return message }
             return "\(line):\(column): \(message)"
         }
+
+        /// With the 1-based line and column of its start in `source`.
+        public func located(in source: String) -> Self {
+            var failure = self
+            let before = source.prefix(range.start.offset)
+            failure.line = before.filter { $0 == "\n" }.count + 1
+            failure.column = before.count - (before.lastIndex(of: "\n").map { before.distance(from: before.startIndex, to: $0) + 1 } ?? 0) + 1
+            return failure
+        }
     }
 
     /// Parses, then checks imports against `environment` and every
@@ -69,40 +89,77 @@ public extension Frame {
         let document = try parse(source, filePath: filePath)
         do {
             try check(document, in: environment)
-        } catch var failure as TypeFailure {
-            let before = source.prefix(failure.range.start.offset)
-            failure.line = before.filter { $0 == "\n" }.count + 1
-            failure.column = before.count - (before.lastIndex(of: "\n").map { before.distance(from: before.startIndex, to: $0) + 1 } ?? 0) + 1
-            throw failure
+        } catch let failure as TypeFailure {
+            throw failure.located(in: source)
         }
         return document
     }
 
+    /// The first failure, as the type's decoder sees it: a program trusts
+    /// its own decoder, never a schema that may have fallen behind it.
     static func check(
         _ document: Document,
         in environment: Environment
     ) throws {
+        if let failure = failures(in: document, environment: environment, bySchema: false).first {
+            throw failure
+        }
+    }
+
+    /// Every failure, for editors: a type's schema reports all its problems
+    /// at their fields; the decoder still has the last word on what passes.
+    static func problems(
+        in document: Document,
+        environment: Environment
+    ) -> [TypeFailure] {
+        failures(in: document, environment: environment, bySchema: true)
+    }
+
+    private static func failures(
+        in document: Document,
+        environment: Environment,
+        bySchema: Bool
+    ) -> [TypeFailure] {
+        var failures: [TypeFailure] = []
         var imported: [Module] = []
         for item in document.imports {
             guard let module = environment.modules.first(where: { $0.name == item.module }) else {
-                throw TypeFailure(message: "No module named '\(item.module)'", range: item.range)
+                failures.append(TypeFailure(message: "No module named '\(item.module)'", range: item.range))
+                continue
             }
             imported.append(module)
         }
         for binding in document.bindings {
             guard let type = binding.type else { continue }
-            let definition = try resolve(type, in: imported, at: binding.range)
+            let definition: TypeDefinition
+            do {
+                definition = try resolve(type, in: imported, at: binding.range)
+            } catch {
+                failures.append(error as? TypeFailure ?? TypeFailure(message: "\(error)", range: binding.range))
+                continue
+            }
+            if bySchema, let schema = definition.schema {
+                let problems = schema.problems(in: binding.value, named: binding.name,
+                                               range: binding.range, document: document)
+                failures += problems
+                if !problems.isEmpty { continue }
+            }
             do {
                 try definition.check(binding.value, document, environment.coding)
             } catch let error as DecodingError {
-                throw TypeFailure(
+                failures.append(TypeFailure(
                     message: "'\(binding.name)' is not a valid \(type.description): \(describe(error, root: binding.name))",
                     range: binding.range
-                )
+                ))
             } catch let error as ResolutionFailure {
-                throw TypeFailure(message: "'\(binding.name)': \(error)", range: binding.range)
+                failures.append(TypeFailure(message: "'\(binding.name)': \(error)", range: binding.range))
+            } catch let error as TypeFailure {
+                failures.append(TypeFailure(message: error.message, range: binding.range))
+            } catch {
+                failures.append(TypeFailure(message: "'\(binding.name)': \(error)", range: binding.range))
             }
         }
+        return failures
     }
 
     private static func resolve(

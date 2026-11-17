@@ -119,6 +119,220 @@ enum FrameTestSuite {
             }
         }
 
+        Test("block strings span lines and drop the closing indentation") {
+            let document = try Frame.parse("""
+                let details = \"\"\"
+                    First line, "quoted" and ""twice"".
+
+                      indented \\u{e9}
+                    \"\"\";
+                let empty = \"\"\"
+                    \"\"\";
+                let inline = \"\"\"one line\"\"\";
+                let tail = "x\\u{e9}";
+                """)
+            try Expect.equal(document.binding(named: "tail")?.value, .string("xé"), "escape at the end of a string")
+            try Expect.equal(document.binding(named: "details")?.value,
+                             .string("First line, \"quoted\" and \"\"twice\"\".\n\n  indented é"), "dedented block")
+            try Expect.equal(document.binding(named: "empty")?.value, .string(""), "empty block")
+            try Expect.equal(document.binding(named: "inline")?.value, .string("one line"), "single-line block")
+            try Expect.throwsError("a line indented less than the closing quotes") {
+                _ = try Frame.parse("let a = \"\"\"\n  text\n    \"\"\";")
+            }
+            try Expect.throwsError("an unterminated block") {
+                _ = try Frame.parse("let a = \"\"\"\n  text\n;")
+            }
+        }
+
+        Test("described types carry a schema that editors can walk") {
+            enum Show: String, Decodable, CaseIterable, Sendable { case full, relativeToBase }
+            struct Include: Decodable, Sendable, FrameDescribable {
+                let from: String
+                let show: Show
+                static let frameSchema = Frame.Schema.object([
+                    .init("from", .string, required: true, summary: "Base directory."),
+                    .init("show", .members(of: Show.self)),
+                ])
+            }
+            struct Output: Decodable, Sendable, FrameDescribable {
+                let include: [Include]
+                static let frameSchema = Frame.Schema.object([.init("include", .array(.of(Include.self)))],
+                                                             summary: "One concatenated file.")
+            }
+            let module = Frame.Module("Concatenation", types: [
+                .decodable(Output.self, named: "Output"),
+                .decodable(Show.self, named: "Show"),
+            ])
+            let schema = try Expect.notNil(module.types[0].schema, "a FrameDescribable type has a schema")
+            try Expect.equal(schema.summary, "One concatenated file.", "summary")
+            try Expect.equal(schema.schema(at: ["include", "from"])?.properties.count, 0, "array elements are transparent")
+            try Expect.equal(schema.schema(at: ["include"])?.schema(at: ["show"])?.members.map(\.name),
+                             ["full", "relativeToBase"], "enum members")
+            try Expect.equal(schema.schema(at: ["include", "nope"]) == nil, true, "unknown field")
+            try Expect.equal(module.types[1].schema == nil, true, "a plain Decodable has none")
+        }
+
+        Test("encoded values render as Frame source that decodes back to the same values") {
+            enum Mode: String, Codable, Equatable { case review, approval }
+            struct Stage: Codable, Equatable { let id: String; let retries: Int }
+            struct Workflow: Codable, Equatable {
+                let mode: Mode
+                let stages: [Stage]
+                let ratio: Double
+                let budget: Decimal
+                let note: String?
+                let details: String
+                let labels: [String: String]
+                let flags: [Bool]
+            }
+            let workflow = Workflow(
+                mode: .review,
+                stages: [.init(id: "runtime", retries: 2), .init(id: "host \"main\"\t", retries: -1)],
+                ratio: 0.1, budget: Decimal(string: "12.50")!, note: nil,
+                details: "First \"line\".\n\n  indented\\path\nhas \"\"\" inside\n",
+                labels: ["zeta": "z", "alpha": "a"], flags: []
+            )
+            let document = try Frame.document(bindings: [(name: "workflow", type: nil, value: workflow)])
+            let source = document.source
+            try Expect.true(source.contains(".mode = .review,"), "an enum renders as a member:\n\(source)")
+            try Expect.true(source.contains(".labels = .{ .alpha = \"a\", .zeta = \"z\" },"), "sorted dictionary keys:\n\(source)")
+            try Expect.true(source.contains(".details = \"\"\"\n"), "multi-line text renders as a block:\n\(source)")
+            try Expect.true(!source.contains(".note"), "nil is left out")
+            let decoded = try Frame.parse(source).decode(Workflow.self, binding: "workflow")
+            try Expect.equal(decoded, workflow, "round trip:\n\(source)")
+            try Expect.equal(try Frame.parse(source).source, source, "rendering is stable")
+            try Expect.throwsError("a field name that is not an identifier") {
+                _ = try FrameEncoder().encode(["not a name": 1])
+            }
+            try Expect.throwsError("a number Frame cannot write") { _ = try FrameEncoder().encode(Double.nan) }
+        }
+
+        Test("a module's schema is written as a module file and read back") {
+            enum Show: String, Decodable, CaseIterable, Sendable, FrameDescribable { case full, relativeToBase }
+            struct Include: Decodable, Sendable, FrameDescribable {
+                static let frameSchema = Frame.Schema.object([
+                    .init("from", .string, required: true, summary: "Base directory."),
+                    .init("show", .of(Show.self)),
+                    .init("paths", .array(.string)),
+                ])
+            }
+            struct Output: Decodable, Sendable, FrameDescribable {
+                static let frameSchema = Frame.Schema.object([
+                    .init("path", .string, required: true),
+                    .init("include", .array(.of(Include.self))),
+                    .init("depth", .integer),
+                ], summary: "One concatenated file.")
+            }
+            let module = Frame.Module("Concatenation", types: [
+                .decodable(Show.self, named: "Show"),
+                .decodable(Include.self, named: "Include"),
+                .decodable(Output.self, named: "Output"),
+            ])
+            let source = try module.document().source
+            try Expect.true(source.hasPrefix("import Frame;\n\nlet Show: Type = .{ .members = [.full, .relativeToBase] };"),
+                            "header and members:\n\(source)")
+            try Expect.true(source.contains(".type = Show") && source.contains(".array = Include"),
+                            "nested types are written by name:\n\(source)")
+            let parsed = try Frame.parse(source, environment: .init([.frame]))
+            let types = try Frame.Schema.types(in: parsed)
+            try Expect.equal(types.map(\.name), ["Show", "Include", "Output"], "type names")
+            try Expect.equal(types.map(\.schema), module.types.compactMap(\.schema), "schemas survive the round trip")
+            for (label, fixture) in [
+                ("unknown scalar", "import Frame; let A: Type = .{ .properties = [.{ .name = \"a\", .type = .strng }] };"),
+                ("two shapes", "import Frame; let A: Type = .{ .members = [], .properties = [] };"),
+                ("unknown field", "import Frame; let A: Type = .{ .propertes = [] };"),
+            ] {
+                try Expect.throwsError(label) { _ = try Frame.parse(fixture, environment: .init([.frame])) }
+            }
+        }
+
+        Test("the schema of module files is itself a module file") {
+            let source = try Frame.Module.frame.document().source
+            let parsed = try Frame.parse(source, environment: .init([.frame]))
+            try Expect.equal(try Frame.Schema.types(in: parsed).map(\.schema), [Frame.Schema.frameSchema],
+                             "self-description round trip:\n\(source)")
+        }
+
+        Test("a schema reports every problem at its field") {
+            let module = try Frame.Module("Concatenation", loading: Frame.parse("""
+                import Frame;
+                let Show: Type = .{ .members = [.full, .relativeToBase] };
+                let Include: Type = .{ .properties = [
+                    .{ .name = "from", .type = .string, .required = true },
+                    .{ .name = "show", .type = Show },
+                    .{ .name = "depth", .type = .integer },
+                    .{ .name = "paths", .type = .{ .array = .string } },
+                ] };
+                """, environment: .init([.frame])))
+            let environment = Frame.Environment([module])
+            let source = """
+                import Concatenation;
+                let names = ["a", 2];
+                let include: Include = .{
+                    .show = .basename,
+                    .depth = "deep",
+                    .paths = names,
+                    .exclude = [],
+                };
+                let fine: Include = .{ .from = "$CWD", .show = .full };
+                """
+            let document = try Frame.parse(source)
+            let problems = Frame.problems(in: document, environment: environment).map { $0.located(in: source) }
+            try Expect.equal(problems.map(\.message), [
+                "'include.show': unknown member '.basename'; expected .full, .relativeToBase",
+                "'include.depth' expects an integer, found a string",
+                "'include.paths[1]' expects a string, found an integer",
+                "'include': unknown field 'exclude'",
+                "'include': missing field 'from'",
+            ], "every problem, in source order")
+            try Expect.equal(problems.compactMap(\.line), [4, 5, 6, 7, 3], "each at its field, a missing one at its binding")
+            try Expect.throwsError("parsing with the environment still fails") {
+                _ = try Frame.parse(source, environment: environment)
+            }
+        }
+
+        Test("an outdated schema misleads only the editor, never the program") {
+            struct Paths: Codable, Sendable, FrameDescribable {
+                var allow: [String] = []
+                var deny: [String] = []
+                static let frameSchema = Frame.Schema.object([.init("allow", .array(.string))])
+            }
+            let environment = Frame.Environment([Frame.Module("Agentic", types: [.decodable(Paths.self, named: "Paths")])])
+            let source = "import Agentic; let paths: Paths = .{ .allow = [], .deny = [\"~/.ssh\"] };"
+            _ = try Frame.parse(source, environment: environment)
+            try Expect.equal(Frame.problems(in: try Frame.parse(source), environment: environment).count, 1,
+                             "the editor reports the field the schema lacks")
+            try Expect.equal(try Paths.frameSchemaProblems(in: Paths(deny: ["x"])).map(\.message),
+                             ["'Paths': unknown field 'deny'"], "the drift test catches it")
+        }
+
+        Test("module files load from a directory; a broken one does not stop the rest") {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("frame-modules-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            try "import Frame;\nlet Mode: Type = .{ .members = [.review] };\n"
+                .write(to: directory.appendingPathComponent("Agentic.frame"), atomically: true, encoding: .utf8)
+            try "import Frame;\nlet Broken: Type = .{ .members = 1 };\n"
+                .write(to: directory.appendingPathComponent("Broken.frame"), atomically: true, encoding: .utf8)
+            try "not frame".write(to: directory.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+            let installed = try Frame.Module("Concatenation", types: [
+                .described(.init(.members([.init("full")])), named: "Show"),
+            ]).install(into: directory)
+            try Expect.equal(installed.lastPathComponent, "Concatenation.frame", "installed by module name")
+            let loaded = Frame.Environment.loading(modulesIn: directory)
+            try Expect.equal(loaded.environment.modules.map(\.name), ["Frame", "Agentic", "Concatenation"],
+                             "modules by file name")
+            _ = try Frame.parse("import Concatenation; let show: Show = .full;", environment: loaded.environment)
+            try Expect.equal(loaded.failures.map(\.file.lastPathComponent), ["Broken.frame"], "the broken file")
+            _ = try Frame.parse("import Agentic; let mode: Mode = .review;", environment: loaded.environment)
+            try Expect.throwsError("a loaded type checks by its schema") {
+                _ = try Frame.parse("import Agentic; let mode: Mode = .approval;", environment: loaded.environment)
+            }
+            try Expect.equal(Frame.Environment.loading(modulesIn: directory.appendingPathComponent("none"))
+                .environment.modules.map(\.name), ["Frame"], "no directory, no modules")
+        }
+
         Test("syntax failures") {
             let invalid = [
                 "let name = \"missing-semicolon\"",
@@ -204,6 +418,9 @@ private enum FrameParity {
                 .ratio = -0.5,
                 .enabled = true,
                 .missing = null,
+                .notes = \"\"\"
+                    Spans "lines".
+                    \"\"\",
             };
             settings.paths.deny = ["~/.ssh"];
             """
@@ -236,6 +453,10 @@ private enum FrameParity {
             ("// line\nlet name = true;", true),
             ("/* block */ let name = null;", true),
             ("let package = packages.agentic.runtime;", true),
+            ("let text = \"\"\"\n    a \"b\" \"\"c\"\"\n    \"\"\";", true),
+            ("let text = \"\"\"inline\"\"\"; let next = \"x\";", true),
+            ("let a = \"\"\"x\"\"\"; let b = \"\"\"y\"\"\";", true),
+            ("let text = \"\"\"\n    unterminated\n;", false),
             ("let name = \"missing semicolon\"", false),
             ("let names = [\"a\" \"b\"];", false),
             ("let package = packages.;", false),

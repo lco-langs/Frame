@@ -63,6 +63,7 @@ public enum Frame {
                 .init(name: "type", expression: path),
                 .init(name: "value", expression: .choice([
                     .symbol(.terminal("quoted")),
+                    .symbol(.terminal("block_quoted")),
                     .symbol(.terminal("number")),
                     .symbol(.terminal("boolean")),
                     .symbol(.terminal("null")),
@@ -106,6 +107,8 @@ public enum Frame {
             ],
             terminals: [
                 .init(name: "quoted", pattern: .regex(#""([^"\\]|\\.)*""#), role: "string"),
+                // Spans lines; a run of one or two quotes may occur inside, three end it.
+                .init(name: "block_quoted", pattern: .regex(#""""([^"\\]|\\.|""?([^"\\]|\\.))*""""#), role: "string"),
                 .init(name: "number", pattern: .regex(#"-?(0|[1-9][0-9]*)(\.[0-9]+)?"#), role: "number"),
                 .init(name: "identifier", pattern: .regex(#"[\p{L}_][\p{L}\p{N}_-]*"#)),
                 .init(name: "boolean", pattern: .regex(#"true|false"#), lexicalPriority: 1, role: "boolean"),

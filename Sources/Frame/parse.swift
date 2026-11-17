@@ -168,8 +168,11 @@ private struct Adapter {
             guard let child = node.children.first else { throw failure("Missing Frame value", at: node) }
             return try value(child)
         case "quoted":
-            guard let raw = node.text else { throw failure("Missing string literal", at: node) }
-            return .string(try unescape(raw, at: node))
+            guard let raw = node.text, raw.count >= 2 else { throw failure("Missing string literal", at: node) }
+            return .string(try unescape(String(raw.dropFirst().dropLast()), at: node))
+        case "block_quoted":
+            guard let raw = node.text, raw.count >= 6 else { throw failure("Missing block string", at: node) }
+            return .string(try unescape(try dedent(String(raw.dropFirst(3).dropLast(3)), at: node), at: node))
         case "number":
             guard let raw = node.text else { throw failure("Missing numeric literal", at: node) }
             if raw.contains(".") {
@@ -216,19 +219,38 @@ private struct Adapter {
         return values
     }
 
-    func unescape(_ raw: String, at node: GrammarParser.Node) throws -> String {
-        let scalars = Array(raw.unicodeScalars)
-        guard scalars.count >= 2 else { throw failure("Invalid string literal", at: node) }
+    /// The line after the opening `"""` starts the text; the closing `"""`
+    /// on a line of its own sets the indentation every line drops.
+    func dedent(_ body: String, at node: GrammarParser.Node) throws -> String {
+        var lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard lines.count > 1 else { return body }
+        if lines[0].allSatisfy(\.isWhitespace) { lines.removeFirst() }
+        guard let indent = lines.last, indent.allSatisfy({ $0 == " " || $0 == "\t" }) else {
+            return lines.joined(separator: "\n")
+        }
+        lines.removeLast()
+        return try lines.map { line in
+            if line.hasPrefix(indent) { return String(line.dropFirst(indent.count)) }
+            guard line.allSatisfy(\.isWhitespace) else {
+                throw failure("A block string line is indented less than its closing \"\"\"", at: node)
+            }
+            return ""
+        }.joined(separator: "\n")
+    }
+
+    /// The text between the quotes, with escapes replaced.
+    func unescape(_ content: String, at node: GrammarParser.Node) throws -> String {
+        let scalars = Array(content.unicodeScalars)
         var result = String.UnicodeScalarView()
-        var index = 1
-        while index < scalars.count - 1 {
+        var index = 0
+        while index < scalars.count {
             if scalars[index] != "\\" {
                 result.append(scalars[index])
                 index += 1
                 continue
             }
             index += 1
-            guard index < scalars.count - 1 else { throw failure("Incomplete string escape", at: node) }
+            guard index < scalars.count else { throw failure("Incomplete string escape", at: node) }
             switch scalars[index] {
             case "n": result.append("\n")
             case "r": result.append("\r")
@@ -236,16 +258,16 @@ private struct Adapter {
             case "\"": result.append("\"")
             case "\\": result.append("\\")
             case "u":
-                guard index + 1 < scalars.count - 1, scalars[index + 1] == "{" else {
+                guard index + 1 < scalars.count, scalars[index + 1] == "{" else {
                     throw failure("Expected '{' after unicode escape", at: node)
                 }
                 index += 2
                 var digits = ""
-                while index < scalars.count - 1 && scalars[index] != "}" {
+                while index < scalars.count && scalars[index] != "}" {
                     digits.unicodeScalars.append(scalars[index])
                     index += 1
                 }
-                guard index < scalars.count - 1, digits.count <= 8,
+                guard index < scalars.count, digits.count <= 8,
                       let number = UInt32(digits, radix: 16),
                       let unicode = Unicode.Scalar(number) else {
                     throw failure("Invalid unicode escape", at: node)
