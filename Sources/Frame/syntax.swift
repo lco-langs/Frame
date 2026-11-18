@@ -121,3 +121,23 @@ public extension Frame {
         case cycle(Reference)
     }
 }
+
+extension Frame.ResolutionFailure: CustomStringConvertible {
+    public var description: String {
+        func name(_ reference: Frame.Reference) -> String {
+            reference.components.joined(separator: ".")
+        }
+        switch self {
+        case .invalid_reference:
+            return "invalid reference"
+        case .missing(let reference):
+            return "nothing named '\(name(reference))' is declared"
+        case .ambiguous(let reference):
+            return "'\(name(reference))' is ambiguous"
+        case .not_object(let reference):
+            return "'\(name(reference))' is not an object, so it has no fields"
+        case .cycle(let reference):
+            return "'\(name(reference))' refers to itself"
+        }
+    }
+}
