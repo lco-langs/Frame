@@ -106,6 +106,20 @@ public extension Frame {
         }
     }
 
+    /// Checks `document` with `context` in scope for references, as when several
+    /// files form one configuration: only `document`'s own bindings are checked.
+    static func check(
+        _ document: Document,
+        in environment: Environment,
+        context: [Binding]
+    ) throws {
+        let own = Set(document.bindings.map(\.name))
+        let visible = context
+            .filter { !own.contains($0.name) }
+            .map { Binding(name: $0.name, mutability: $0.mutability, type: nil, value: $0.value, range: $0.range) }
+        try check(Document(imports: document.imports, bindings: document.bindings + visible), in: environment)
+    }
+
     /// Every failure, for editors: a type's schema reports all its problems
     /// at their fields; the decoder still has the last word on what passes.
     static func problems(
