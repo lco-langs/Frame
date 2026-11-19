@@ -2,7 +2,7 @@ import Foundation
 import IO
 
 /// Module files on disk, through IO.
-enum FrameFiles {
+package enum FrameFiles {
     enum Failure: Error, Sendable, CustomStringConvertible {
         case not_a_file(URL)
         case not_utf8(URL)
@@ -27,7 +27,7 @@ enum FrameFiles {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    static func read(_ url: URL) throws -> String {
+    package static func read(_ url: URL) throws -> String {
         let backend = try SystemFileSource(path: url.path, openNonblocking: true)
         guard try backend.inspect(url: url).kind == .file else { throw Failure.not_a_file(url) }
         var source = Source(backend)
@@ -52,7 +52,7 @@ enum FrameFiles {
 
     /// Written beside `url` first, then moved over it, so a reader never sees
     /// half a file.
-    static func write(_ text: String, to url: URL) throws {
+    package static func write(_ text: String, to url: URL) throws {
         let fileSystem = FileSystem.default
         try fileSystem.directory.create(url.deletingLastPathComponent())
         let staging = url.deletingLastPathComponent()
