@@ -1,3 +1,10 @@
 import Executable;
 
-let package: Package = .{};
+let package: Package = .{ 
+    .deploy = .{ 
+        .products = [
+            "frame",
+            "frame_generate",
+        ] 
+    } 
+};

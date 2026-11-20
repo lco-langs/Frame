@@ -17,21 +17,27 @@ let package = Package(
         .package(url: "https://github.com/leviouwendijk/Position.git", branch: "master"),
     ],
     targets: [
-        .target(name: "Frame", dependencies: [
-            .product(name: "Grammar", package: "Grammar"),
-            .product(name: "GrammarParsing", package: "Parsing"),
-            .product(name: "IO", package: "IO"),
-            .product(name: "Parsing", package: "Parsing"),
-            .product(name: "Position", package: "Position")
-        ]),
+        .target(
+            name: "Frame",
+            dependencies: [
+                .product(name: "Grammar", package: "Grammar"),
+                .product(name: "GrammarParsing", package: "Parsing"),
+                .product(name: "IO", package: "IO"),
+                .product(name: "Parsing", package: "Parsing"),
+                .product(name: "Position", package: "Position"),
+            ]),
         // private and shared roots: directories laid out like a home (.config/<app>/, .agentic/)
-        .target(name: "Roots", dependencies: [
-            "Frame",
-            .product(name: "IO", package: "IO")
-        ]),
+        .target(
+            name: "Roots",
+            dependencies: [
+                "Frame",
+                .product(name: "IO", package: "IO"),
+            ]),
         .executableTarget(name: "FrameCLI", dependencies: ["Frame"]),
-        .executableTarget(name: "FrameGenerate", dependencies: [
-            "Frame", .product(name: "GrammarTreeSitter", package: "Grammar")
-        ]),
+        .executableTarget(
+            name: "FrameGenerate",
+            dependencies: [
+                "Frame", .product(name: "GrammarTreeSitter", package: "Grammar"),
+            ]),
     ]
 )
