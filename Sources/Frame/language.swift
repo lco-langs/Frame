@@ -5,6 +5,7 @@ public enum Frame {
     ///
     ///     import Agentic;
     ///     let scope: PathScope = .{ .path = "~/notes", .sessions = .all, };
+    ///     let limit: Size = .gigabytes(2.5);
     ///     var settings: AgenticSettings = .{ .paths = .{ .ask = [scope] } };
     ///     settings.paths.deny = [];
     public static func language() throws -> Grammar.Language {
@@ -70,6 +71,7 @@ public enum Frame {
                     .symbol(.production("literal")),
                     .symbol(.production("array")),
                     .symbol(.production("reference")),
+                    .symbol(.production("call")),
                     .symbol(.production("member"))
                 ])),
                 // An object of the expected type: `.{ .name = value, }`.
@@ -85,6 +87,15 @@ public enum Frame {
                     .field("name", identifier),
                     .literal("="),
                     .field("value", value)
+                ])),
+                // A member with arguments, e.g. `.gigabytes(2.5)`: shorthand for the one-field
+                // object `.{ .gigabytes = 2.5 }` (several arguments make the field an array).
+                .init(name: "call", expression: .sequence([
+                    .literal("."),
+                    .field("name", identifier),
+                    .literal("("),
+                    .optional(.symbol(.production("array_items"))),
+                    .literal(")")
                 ])),
                 // A member of the expected type, e.g. `.review` or `.all`.
                 .init(name: "member", expression: .sequence([
@@ -129,6 +140,7 @@ public enum Frame {
                 .field(production: "import", name: "module", role: "namespace"),
                 .field(production: "field", name: "name", role: "property"),
                 .field(production: "member", name: "name", role: "constant"),
+                .field(production: "call", name: "name", role: "function"),
                 .symbol(.terminal("identifier"), within: "type", role: "type"),
                 .symbol(.terminal("identifier"), within: "reference", role: "variable"),
                 .literal("=", role: "operator"),
@@ -138,6 +150,8 @@ public enum Frame {
                 .literal("}", role: "punctuation.bracket"),
                 .literal("[", role: "punctuation.bracket"),
                 .literal("]", role: "punctuation.bracket"),
+                .literal("(", role: "punctuation.bracket"),
+                .literal(")", role: "punctuation.bracket"),
                 .literal(";", role: "punctuation.delimiter"),
                 .literal(",", role: "punctuation.delimiter")
             ]

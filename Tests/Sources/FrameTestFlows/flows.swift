@@ -49,6 +49,43 @@ enum FrameTestSuite {
             try Expect.equal(bytes.upperBound.offset, source.utf8.count, "byte alignment")
         }
 
+        Test("a call is a one-field object: .name(value), several arguments as an array, none as a member") {
+            let document = try Frame.parse("""
+                let limits = .{
+                    .size = .gigabytes(2.5),
+                    .range = .between(1, 2,),
+                    .plain = .none(),
+                    .nested = .wrap(.{ .a = 1 }),
+                    .spelled = .{ .gigabytes = 2.5 },
+                };
+                """)
+            guard case .object(let fields) = document.bindings[0].value else {
+                throw Frame.SyntaxFailure(.init("Expected an object literal"))
+            }
+            func field(_ value: Frame.Value) -> [String] {
+                guard case .object(let inner) = value else { return [] }
+                return inner.map(\.name)
+            }
+            try Expect.equal(field(fields[0].value), ["gigabytes"], "one argument")
+            guard case .object(let size) = fields[0].value, case .object(let spelled) = fields[4].value else {
+                throw Frame.SyntaxFailure(.init("Expected objects"))
+            }
+            try Expect.equal(size[0].value, spelled[0].value, "the call means the same as the spelled-out object")
+            guard case .object(let range) = fields[1].value else { throw Frame.SyntaxFailure(.init("Expected object")) }
+            try Expect.equal(range[0].value, .array([.integer(1), .integer(2)]), "several arguments, trailing comma")
+            try Expect.equal(fields[2].value, .member("none"), "no arguments is the member")
+            try Expect.equal(field(fields[3].value), ["wrap"], "an object argument")
+
+            struct Size: Decodable, Equatable { let gigabytes: Double }
+            struct Limits: Decodable { let size: Size; let spelled: Size }
+            let sizes = try Frame.parse("let limits = .{ .size = .gigabytes(2.5), .spelled = .{ .gigabytes = 2.5 } };")
+            let limits = try sizes.decode(Limits.self, binding: "limits")
+            try Expect.equal(limits.size, limits.spelled, "decodes like the object")
+
+            let grammar = try GrammarTreeSitter.emit(Frame.language()).grammarJSON
+            try Expect.true(grammar.contains("\"call\""), "the call production reaches the tree-sitter grammar")
+        }
+
         Test("var reassignment replaces a value or one field; let refuses it") {
             let document = try Frame.parse("""
                 var settings = .{ .paths = .{ .allow = ["a"] }, .log = .entry };

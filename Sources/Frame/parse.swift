@@ -198,6 +198,18 @@ private struct Adapter {
                 throw failure("Missing member name", at: node)
             }
             return .member(name)
+        case "call":
+            // `.name(value)` is the one-field object `.{ .name = value }`; `.name(a, b)` makes the
+            // field an array, and `.name()` is the plain member `.name`.
+            guard let name = node.children.first(where: { $0.field == "name" })?.text else {
+                throw failure("Missing call name", at: node)
+            }
+            let arguments = try node.children.first(where: { $0.name == "array_items" }).map(arrayItems) ?? []
+            switch arguments.count {
+            case 0: return .member(name)
+            case 1: return .object([.init(name: name, value: arguments[0], range: try map.legacyRange(node.range))])
+            default: return .object([.init(name: name, value: .array(arguments), range: try map.legacyRange(node.range))])
+            }
         case "literal":
             return .object(try fields(in: node))
         case "array":
