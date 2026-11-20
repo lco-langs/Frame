@@ -9,6 +9,7 @@ let package = Package(
         .executable(name: "t_roots", targets: ["RootsTests"])
     ],
     dependencies: [
+        .package(url: "https://github.com/leviouwendijk/Errors.git", branch: "master"),
         .package(url: "https://github.com/leviouwendijk/Grammar.git", branch: "master"),
         .package(url: "https://github.com/leviouwendijk/IO.git", branch: "master"),
         .package(url: "https://github.com/leviouwendijk/Parsing.git", branch: "master"),
@@ -18,6 +19,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(name: "FrameTestFlows", dependencies: [
+            .product(name: "Errors", package: "Errors"),
             .product(name: "Frame", package: "Frame"),
             .product(name: "Grammar", package: "Grammar"),
             .product(name: "GrammarParsing", package: "Parsing"),

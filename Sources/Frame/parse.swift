@@ -7,8 +7,27 @@ import Position
 public extension Frame {
     struct SyntaxFailure: Error, Sendable, CustomStringConvertible {
         public let diagnostic: Diagnostic
+        /// 1-based, when the source is known.
+        public var line: Int?
+        public var column: Int?
+
         public init(_ diagnostic: Diagnostic) { self.diagnostic = diagnostic }
-        public var description: String { diagnostic.description }
+
+        public var description: String {
+            guard let line, let column else { return diagnostic.description }
+            return "\(line):\(column): \(diagnostic.message)"
+        }
+
+        /// With the 1-based line and column of its start in `source`.
+        public func located(in source: String) -> Self {
+            guard let offset = diagnostic.utf8Range?.lowerBound.offset else { return self }
+            var failure = self
+            let before = source.utf8.prefix(offset)
+            let lineStart = before.lastIndex(of: UInt8(ascii: "\n")).map { before.index(after: $0) } ?? before.startIndex
+            failure.line = before.filter { $0 == UInt8(ascii: "\n") }.count + 1
+            failure.column = String(decoding: before[lineStart...], as: UTF8.self).count + 1
+            return failure
+        }
     }
 
     static func tree(_ source: String, filePath: String? = nil) throws -> GrammarParser.Node {
@@ -20,12 +39,16 @@ public extension Frame {
         do {
             root = try tree(source, filePath: filePath)
         } catch GrammarParser.Failure.syntax(let diagnostic) {
-            throw SyntaxFailure(diagnostic)
+            throw SyntaxFailure(diagnostic).located(in: source)
         } catch GrammarParser.Failure.lexical(let error) {
             let range = try? Position.TextMap(source: source).legacyRange(error.range)
-            throw SyntaxFailure(Diagnostic(error.message, range: range, utf8Range: error.range))
+            throw SyntaxFailure(Diagnostic(error.message, range: range, utf8Range: error.range)).located(in: source)
         }
-        return try Adapter(source: source).document(root)
+        do {
+            return try Adapter(source: source).document(root)
+        } catch let failure as SyntaxFailure {
+            throw failure.located(in: source)
+        }
     }
 
     private static let native: Result<GrammarParser, any Error> = Result {

@@ -11,6 +11,7 @@ let package = Package(
         .executable(name: "frame", targets: ["FrameCLI"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/leviouwendijk/Errors.git", branch: "master"),
         .package(url: "https://github.com/leviouwendijk/Grammar.git", branch: "master"),
         .package(url: "https://github.com/leviouwendijk/IO.git", branch: "master"),
         .package(url: "https://github.com/leviouwendijk/Parsing.git", branch: "master"),
@@ -20,6 +21,7 @@ let package = Package(
         .target(
             name: "Frame",
             dependencies: [
+                .product(name: "Errors", package: "Errors"),
                 .product(name: "Grammar", package: "Grammar"),
                 .product(name: "GrammarParsing", package: "Parsing"),
                 .product(name: "IO", package: "IO"),

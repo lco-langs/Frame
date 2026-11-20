@@ -1,3 +1,4 @@
+import Errors
 import Foundation
 import Frame
 import GrammarParsing
@@ -153,7 +154,29 @@ enum FrameTestSuite {
             } catch let failure as Frame.TypeFailure {
                 try Expect.true(failure.description.hasPrefix("2:") && failure.message.contains("a.path"),
                                 "the failure names the line and the field: \(failure)")
+                try Expect.equal(failure.report.diagnostic.identity?.raw, "frame.type_check", "type code")
+                try Expect.true(failure.explanation.hasPrefix("Frame type error at 2:"),
+                                "the explanation leads with the location: \(failure.explanation)")
+                try Expect.equal(failure.report.effectiveDisposition, .invalid_input, "the source must change")
             }
+            do {
+                _ = try Frame.parse("let a = 1;\nlet a = 2;")
+                try Expect.true(false, "a duplicate binding must fail")
+            } catch let failure as Frame.SyntaxFailure {
+                try Expect.equal(failure.description, "2:1: 'a' is already declared", "syntax failures are located")
+                try Expect.equal(failure.report.diagnostic.identity?.raw, "frame.syntax", "syntax code")
+                try Expect.equal(failure.report.diagnostic[field: "source.line"]?.value, .integer(2), "line field")
+                try Expect.equal(
+                    failure.explanation,
+                    "Frame syntax error at 2:1. 'a' is already declared.",
+                    "the parser's text is the reason"
+                )
+            }
+            try Expect.equal(
+                Frame.ResolutionFailure.missing(try .init(components: ["a", "b"])).report.diagnostic.identity?.raw,
+                "frame.reference.missing",
+                "reference code"
+            )
         }
 
         Test("block strings span lines and drop the closing indentation") {
