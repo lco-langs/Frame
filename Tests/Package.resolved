@@ -1,5 +1,5 @@
 {
-  "originHash" : "65a02fdd677697fa9f1b2e1e2dd29093cbfa05e133159e241ce4a728883702e2",
+  "originHash" : "62767b3d031b1f57b7e5a5142988d0e62b7dd5f978964de455b35f33e92002bb",
   "pins" : [
     {
       "identity" : "atomos",
@@ -7,7 +7,7 @@
       "location" : "https://github.com/leviouwendijk/Atomos.git",
       "state" : {
         "branch" : "master",
-        "revision" : "d82fd2ccb56f9fafbb079435c4d70ff5207bfe8c"
+        "revision" : "857fa1b7d1975fe17d52e21c154f92ba5e696be3"
       }
     },
     {
@@ -16,7 +16,7 @@
       "location" : "https://github.com/leviouwendijk/DSL.git",
       "state" : {
         "branch" : "master",
-        "revision" : "14b60217f2e8d6c94e9869ec6f81697aa416c55d"
+        "revision" : "c25c620bc766e4a3e59e6224b11c9a868a5f88d5"
       }
     },
     {
@@ -25,7 +25,7 @@
       "location" : "https://github.com/leviouwendijk/Errors.git",
       "state" : {
         "branch" : "master",
-        "revision" : "3317793dc05c9ac49e6a543c1ec1aa224276d8e1"
+        "revision" : "af4592f7389c1d43ef8d20155cd6da973b7e88b6"
       }
     },
     {
@@ -43,7 +43,7 @@
       "location" : "https://github.com/leviouwendijk/IO.git",
       "state" : {
         "branch" : "master",
-        "revision" : "e7b8b41721cad2458d8bbd01f8d4a5f38dcd44ef"
+        "revision" : "6e2ee96c8b21bca65a09a07ae7206e3ab4793a0c"
       }
     },
     {
@@ -52,7 +52,7 @@
       "location" : "https://github.com/leviouwendijk/Lexing.git",
       "state" : {
         "branch" : "master",
-        "revision" : "8af7b5e20aaf123d2908662c238ac5507c68298c"
+        "revision" : "5037b8580634552bb488692067cf3b209e1911e4"
       }
     },
     {
@@ -61,7 +61,7 @@
       "location" : "https://github.com/leviouwendijk/Parsing.git",
       "state" : {
         "branch" : "master",
-        "revision" : "fd3f4869b1c4246954e89a410fbb71017242e2dd"
+        "revision" : "5f1e6085288011b7898bf3a8f476d1c347804f7d"
       }
     },
     {
@@ -79,7 +79,7 @@
       "location" : "https://github.com/leviouwendijk/Primitives.git",
       "state" : {
         "branch" : "master",
-        "revision" : "0c185c7cd2a829a47518a5134648b3cffc085b2a"
+        "revision" : "1e9c7defa2037e0b74be9e95d8e987442323d372"
       }
     },
     {

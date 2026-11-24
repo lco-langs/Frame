@@ -394,6 +394,15 @@ enum FrameTestSuite {
                 .environment.modules.map(\.name), ["Frame"], "no directory, no modules")
         }
 
+        Test("names that start with a keyword stay whole") {
+            let document = try Frame.parse(
+                "let letter = 1; var variable = .imported; let nullable = null; let truth = true;"
+            )
+            try Expect.equal(document.bindings.map(\.name), ["letter", "variable", "nullable", "truth"], "names")
+            try Expect.equal(document.bindings[1].value, .member("imported"), "member starting with a keyword")
+            try Expect.equal(document.bindings[3].value, .boolean(true), "keyword values still lex")
+        }
+
         Test("the value syntax embeds in another language") {
             let values = Frame.valueGrammar()
             let host = try Grammar.Language(

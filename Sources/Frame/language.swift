@@ -58,6 +58,8 @@ public enum Frame {
                 .init(name: "var_keyword", pattern: .literal("var"), lexicalPriority: 1, role: "keyword")
             ],
             extras: values.extras,
+            // Keywords lex whole only: `letter` is an identifier, not `let` + `ter`.
+            word: "identifier",
             highlights: [
                 .field(production: "binding", name: "name", role: "variable"),
                 .field(production: "import", name: "module", role: "namespace")
