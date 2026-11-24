@@ -1,6 +1,7 @@
 import Errors
 import Foundation
 import Frame
+import enum Grammar.Grammar
 import GrammarParsing
 import GrammarTreeSitter
 import Position
@@ -391,6 +392,40 @@ enum FrameTestSuite {
             }
             try Expect.equal(Frame.Environment.loading(modulesIn: directory.appendingPathComponent("none"))
                 .environment.modules.map(\.name), ["Frame"], "no directory, no modules")
+        }
+
+        Test("the value syntax embeds in another language") {
+            let values = Frame.valueGrammar()
+            let host = try Grammar.Language(
+                name: "host",
+                start: "document",
+                productions: [
+                    .init(name: "document", expression: .repeat0(.sequence([
+                        .symbol(.terminal("emit_keyword")),
+                        .field("value", .symbol(.production("value"))),
+                        .literal(";")
+                    ])))
+                ] + values.productions,
+                terminals: values.terminals + [
+                    .init(name: "emit_keyword", pattern: .literal("emit"), lexicalPriority: 1, role: "keyword")
+                ],
+                extras: values.extras,
+                highlights: values.highlights
+            )
+            let parser = try GrammarParser(language: host)
+            _ = try parser.parse(
+                """
+                emit .{ .size = .gigabytes(2.5), .tags = ["a",], .body = \"\"\"
+                    text
+                    \"\"\", };
+                // comments and references come along
+                emit config.paths;
+                """,
+                filePath: nil
+            )
+            try Expect.throwsError("host statements only") {
+                _ = try parser.parse("let a = 1;", filePath: nil)
+            }
         }
 
         Test("syntax failures") {
