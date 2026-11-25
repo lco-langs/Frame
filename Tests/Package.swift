@@ -9,11 +9,11 @@ let package = Package(
         .executable(name: "t_roots", targets: ["RootsTests"])
     ],
     dependencies: [
-        .package(url: "https://github.com/leviouwendijk/Errors.git", branch: "master"),
+        .package(url: "https://github.com/swift-lco/Errors.git", branch: "master"),
         .package(url: "https://github.com/swift-langs/Grammar.git", branch: "master"),
-        .package(url: "https://github.com/leviouwendijk/IO.git", branch: "master"),
+        .package(url: "https://github.com/swift-lco/IO.git", branch: "master"),
         .package(url: "https://github.com/swift-langs/Parsing.git", branch: "master"),
-        .package(url: "https://github.com/leviouwendijk/Position.git", branch: "master"),
+        .package(url: "https://github.com/swift-lco/Position.git", branch: "master"),
         .package(url: "https://github.com/swift-tooling/Testing.git", branch: "master"),
         .package(path: ".."),
     ],
